@@ -10,7 +10,16 @@ from numpy.lib.stride_tricks import sliding_window_view
 class MACTitan(nn.Module):
 
     # MAC连接attention输出，neural memory输出，persistent memory输出，dynamic cheatsheet memory输出
-    def __init__(self, hidden_dim, seq_len, pm_len, dc_len, layers_num = 2, alpha = 0.999, eta = 0.8, theta = 0.3):
+    def __init__(self, 
+                 hidden_dim,        # 特征维度
+                 seq_len,           # 序列长度
+                 pm_len,            # persistent memory记忆长度
+                 dc_len,            # dynamic cheatsheet记忆长度
+                 layers_num = 2,    # neural memory模块的层数
+                 alpha = 0.999,     
+                 eta = 0.8, 
+                 theta = 0.3):
+        
         super().__init__()
 
         # 初始化各个维度和参数
@@ -19,7 +28,7 @@ class MACTitan(nn.Module):
         self.dc_len = dc_len
         self.hidden_dim = hidden_dim
         # 计算中间维度
-        self.inter_dim = (dc_len, pm_len + 2 * hidden_dim)
+        self.inter_dim = (dc_len + pm_len + 2 * seq_len)
 
         # 持久化记忆层
         self.persistent_memory = nn.Parameter(torch.randn((pm_len, self.hidden_dim)))
@@ -80,14 +89,14 @@ class Titan(nn.Module):
 
     def __init__(
             self, 
-            input_dim,
-            hidden_dim, 
-            output_dim,
-            context_window,
-            pm_len, 
+            input_dim,          # 输入维度
+            hidden_dim,         # 特征维度
+            output_dim,         # 输出维度
+            context_window,     # 上下文窗口大小
+            pm_len,             
             dc_len,
-            n_layers = 2,
-            n_layers_nmm = 2, 
+            n_layers = 2,       # MAC层数
+            n_layers_nmm = 2,   # neural memory模块层数
             alpha = 0.999, 
             eta = 0.8, 
             theta = 0.3):
@@ -133,14 +142,13 @@ class Titan(nn.Module):
 
         self.cfg = load_config("config.yaml")
         self.pathb = LLMCheatsheetMemory(self.cfg.path_b.__dict__, hidden_dim=self.hidden_dim)
-
         
     # 处理一个窗口的输入，输出(batch_size, output_dim)
     def process(self, X):
         batch_size = X.shape[0]
         # 输入嵌入
         X = self.embeding_layer(X.reshape(-1, self.input_dim)).view(batch_size, self.context_window, self.hidden_dim)
-        
+
         # 2) DC 检索：得到 dc_mem (B, dc_len, hidden_dim)
         #    这里 query_text/window_text 先用占位，你后续可以换成真实文本摘要
         if hasattr(self, "dc") and self.cfg.dc.enabled and self.cfg.dc.mode != "off":

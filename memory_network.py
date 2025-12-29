@@ -6,8 +6,16 @@ from torch.func import functional_call
 # 定义类似titans的NeuralMemory模块
 class NeuralMemory(nn.Module):
 
-    def __init__(self, input_dim = 16, layers = 2, hidden_dim = 32, alpha = 0.999, eta = 0.60, theta = 0.05):
+    def __init__(self, 
+                 input_dim = 16,    # 输入维度
+                 layers = 2,        # MLP层数
+                 hidden_dim = 32,   # 隐藏层维度
+                 alpha = 0.999,     
+                 eta = 0.60, 
+                 theta = 0.05):
+        
         super().__init__()
+        
         self.layers = None
         # 定义MLP层结构
         if layers == 1:
