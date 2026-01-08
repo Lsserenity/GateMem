@@ -1,24 +1,21 @@
 dc:
   enabled: true
-  mode: dynamic   # off | static | dynamic
+  mode: dynamic
 
   llm:
     provider: qwen
-    model: qwen2.5-7b-instruct
+    model: qwen-plus
     temperature: 0.2
     max_tokens: 256
-    update_every: 1
-    consolidate_every: 0
     max_entries_per_update: 2
-    schema: strict_json
 
   embedding:
-    provider: qwen
+    provider: qwen        # 或 stub（如果你还在测试）
     model: text-embedding-v3
     embed_dim: 1024
     dc_len: 8
     similarity: cosine
-    min_relevance: 0.25
+    min_relevance: 0.0    # 之后再改
 
   memory:
     capacity: 512
