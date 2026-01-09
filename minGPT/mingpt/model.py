@@ -111,7 +111,7 @@ class Block(nn.Module):
         if self.nm is not None:
             B, T, C = x.shape
             nm_memory = self.nm.retrieve(x.reshape(B*T, C)).reshape(B, T, C)
-            if dc_memory is None or dc_memory.shape != x.shape:
+            if dc_memory is None:
                 dc_memory = torch.zeros_like(x)
             g = self.dc_gate(dc_memory)
             x = x + g * nm_memory
