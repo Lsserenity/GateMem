@@ -58,7 +58,7 @@ class Trainer:
         for callback in self.callbacks.get(onevent, []):
             callback(self)
 
-    def run(self):
+    def run(self, dc_generater = None):
         model, config = self.model, self.config
 
         # setup the optimizer

@@ -74,7 +74,7 @@ class CausalSelfAttention(nn.Module):
 class Block(nn.Module):
     """ an unassuming Transformer block """
 
-    def __init__(self, config, nm = None, dc_memory = None):
+    def __init__(self, config, nm = None):
         super().__init__()
         self.ln_1 = nn.LayerNorm(config.n_embd)
         self.attn = CausalSelfAttention(config)
@@ -90,33 +90,30 @@ class Block(nn.Module):
 
         # 引入neural memory模块
         self.nm = nm
-        # 定义 dynamic cheatsheet gate融合层
-        self.dc_memory = dc_memory
-        # 这里调用时需要注意调整dc_memory的shape以匹配x的shape
-        self.dc_gate = nn.Sequential(
-            nn.Linear(config.n_embd, 4 * config.n_embd),
-            nn.SiLU(),
-            nn.Linear(4 * config.n_embd, 4 * config.n_embd),
-            nn.SiLU(),
-            nn.Linear(4 * config.n_embd, 1),
-            nn.Sigmoid()
-        )
+        if nm is not None:
+            self.dc_gate = nn.Sequential(
+                nn.Linear(config.n_embd, 4 * config.n_embd),
+                nn.SiLU(),
+                nn.Linear(4 * config.n_embd, config.n_embd),
+                nn.Sigmoid()
+            )
+        
+            self.gate = nn.Sequential(
+                nn.Linear(config.n_embd, 4 * config.n_embd),
+                nn.SiLU(),
+                nn.Linear(4 * config.n_embd, config.n_embd),
+                nn.Sigmoid()
+            )
 
-        self.gate = nn.Sequential(
-            nn.Linear(config.n_embd, 4 * config.n_embd),
-            nn.SiLU(),
-            nn.Linear(4 * config.n_embd, 4 * config.n_embd),
-            nn.SiLU(),
-            nn.Linear(4 * config.n_embd, 1),
-            nn.Sigmoid()
-        )
 
-    def forward(self, x):
+    def forward(self, x, dc_memory = None):
         # 查询neural memory
         if self.nm is not None:
             B, T, C = x.shape
             nm_memory = self.nm.retrieve(x.reshape(B*T, C)).reshape(B, T, C)
-            g = self.dc_gate(self.dc_memory)
+            if dc_memory is None or dc_memory.shape != x.shape:
+                dc_memory = torch.zeros_like(x)
+            g = self.dc_gate(dc_memory)
             x = x + g * nm_memory
 
             x = x + self.attn(self.ln_1(x))
@@ -154,8 +151,9 @@ class GPT(nn.Module):
         C.attn_pdrop = 0.1
         return C
 
-    def __init__(self, config):
+    def __init__(self, config, types = None):
         super().__init__()
+        self.types = types
         assert config.vocab_size is not None
         assert config.block_size is not None
         self.block_size = config.block_size
@@ -184,29 +182,22 @@ class GPT(nn.Module):
             }[config.model_type])
 
         # neural network 添加
-        from .memory_network import NeuralMemory
-        self.neural_memory = NeuralMemory(
-            input_dim = config.n_embd,
-            layers = 2,
-            hidden_dim = 4 * config.n_embd,
-        )
-        # remain
-        # 每一个token的维度大小是config.n_embd，由官方的GPT对齐生成
-        # dc期望的输出维度(B, T, C) （和输入的x对齐）
-        # B 为 batch size
-        # T 为 token 数量
-        # C 为 config.n_embd， 框架固定，必须对齐
-        # 理论上来讲，B, T的设置来自外层train/test的调用设置，因此dc的调用应该留出接口
-        from .dynamic_cheatsheet.cheatsheet_memory import CheatSheetMemory
-        self.dc_memory = CheatSheetMemory
-        # 把dc的输出赋值给self.dc_memory即可，即完成接入。
+        if self.types is not None:
+            from .memory_network import NeuralMemory
+            self.neural_memory = NeuralMemory(
+                input_dim = config.n_embd,
+                layers = 2,
+                hidden_dim = 4 * config.n_embd,
+            )
+        else:
+            self.neural_memory = None
 
         self.transformer = nn.ModuleDict(dict(
             wte = nn.Embedding(config.vocab_size, config.n_embd),
             wpe = nn.Embedding(config.block_size, config.n_embd),
             drop = nn.Dropout(config.embd_pdrop),
             # 将Block中的neural memory模块传入
-            h = nn.ModuleList([Block(config, nm = self.neural_memory, dc_memory=self.dc_memory) for _ in range(config.n_layer)]),
+            h = nn.ModuleList([Block(config, nm = self.neural_memory) for _ in range(config.n_layer)]),
             ln_f = nn.LayerNorm(config.n_embd),
         ))
         self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
@@ -259,6 +250,7 @@ class GPT(nn.Module):
         # # basically the openai checkpoints use a "Conv1D" module, but we only want to use a vanilla nn.Linear.
         # # this means that we have to transpose these weights when we import them
         # assert len(keys) == len(sd)
+        # 修改，只复制transformer部分的参数
         for k in keys:
             if k not in sd:
                 continue
@@ -323,7 +315,8 @@ class GPT(nn.Module):
         optimizer = torch.optim.AdamW(optim_groups, lr=train_config.learning_rate, betas=train_config.betas)
         return optimizer
 
-    def forward(self, idx, targets=None):
+    # 修改，传入dc_generater
+    def forward(self, idx, targets=None, dc_generater = None):
         device = idx.device
         b, t = idx.size()
         assert t <= self.block_size, f"Cannot forward sequence of length {t}, block size is only {self.block_size}"
@@ -333,8 +326,15 @@ class GPT(nn.Module):
         tok_emb = self.transformer.wte(idx) # token embeddings of shape (b, t, n_embd)
         pos_emb = self.transformer.wpe(pos) # position embeddings of shape (1, t, n_embd)
         x = self.transformer.drop(tok_emb + pos_emb)
+
+        if dc_generater is not None:
+            dc_memory = dc_generater(x)
+        else:
+            dc_memory = None
+
         for block in self.transformer.h:
-            x = block(x)
+            x = block(x, dc_memory=dc_memory)
+
         x = self.transformer.ln_f(x)
         logits = self.lm_head(x)
 
@@ -346,7 +346,7 @@ class GPT(nn.Module):
         return logits, loss
 
     @torch.no_grad()
-    def generate(self, idx, max_new_tokens, temperature=1.0, do_sample=False, top_k=None):
+    def generate(self, idx, max_new_tokens, temperature=1.0, do_sample=False, top_k=None, dc_generater = None):
         """
         Take a conditioning sequence of indices idx (LongTensor of shape (b,t)) and complete
         the sequence max_new_tokens times, feeding the predictions back into the model each time.
@@ -356,7 +356,8 @@ class GPT(nn.Module):
             # if the sequence context is growing too long we must crop it at block_size
             idx_cond = idx if idx.size(1) <= self.block_size else idx[:, -self.block_size:]
             # forward the model to get the logits for the index in the sequence
-            logits, _ = self(idx_cond)
+            # 修改，传入dc_generater, 注意要规范输入输出的维度！！！
+            logits, _ = self(idx_cond, dc_generater = dc_generater)
             # pluck the logits at the final step and scale by desired temperature
             logits = logits[:, -1, :] / temperature
             # optionally crop the logits to only the top k options
