@@ -191,7 +191,15 @@ class GPT(nn.Module):
             hidden_dim = 4 * config.n_embd,
         )
         # remain
-        self.dc_memory = None
+        # 每一个token的维度大小是config.n_embd，由官方的GPT对齐生成
+        # dc期望的输出维度(B, T, C) （和输入的x对齐）
+        # B 为 batch size
+        # T 为 token 数量
+        # C 为 config.n_embd， 框架固定，必须对齐
+        # 理论上来讲，B, T的设置来自外层train/test的调用设置，因此dc的调用应该留出接口
+        from .dynamic_cheatsheet.cheatsheet_memory import CheatSheetMemory
+        self.dc_memory = CheatSheetMemory
+        # 把dc的输出赋值给self.dc_memory即可，即完成接入。
 
         self.transformer = nn.ModuleDict(dict(
             wte = nn.Embedding(config.vocab_size, config.n_embd),
