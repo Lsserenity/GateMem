@@ -50,6 +50,9 @@ class NeuralMemory(nn.Module):
         # 存储惊讶度
         self.surprise = {}
         self.silu = nn.SiLU()
+
+        # 记录新参数
+        self.new_params = None
     
     # 定义前向传播函数
     def forward(self, X):
@@ -77,8 +80,8 @@ class NeuralMemory(nn.Module):
             x = layer(x)
         
         # 计算loss和梯度
-        loss = ((k - v)**2).mean(axis=0).sum()
-        grads = torch.autograd.grad(loss, self.parameters(), create_graph=True)
+        loss = ((k - v)**2).mean()
+        grads = torch.autograd.grad(loss, self.parameters())
 
         # 更新mlp的参数
         update_params = {}
@@ -87,10 +90,11 @@ class NeuralMemory(nn.Module):
                 self.surprise[name] = torch.zeros_like(grad)
             self.surprise[name] = self.eta * self.surprise[name] - self.theta * grad
             # 只更新mlp的参数
-            if name[0] not in ['K', 'V', 'Q']:
+            root = name.split('.')[0]
+            if root not in ['K', 'V', 'Q']:
                 updated_param = self.alpha * param.data + self.surprise[name]
                 update_params[name] = updated_param
             else:
                 update_params[name] = param.data
         
-        return loss.item(), update_params
+        self.new_params = update_params
