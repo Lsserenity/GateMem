@@ -316,7 +316,7 @@ class GPT(nn.Module):
         return optimizer
 
     # 修改，传入dc_generater
-    def forward(self, idx, targets=None, dc_generater = None):
+    def forward(self, idx, targets=None, dc_memory = None):
         device = idx.device
         b, t = idx.size()
         assert t <= self.block_size, f"Cannot forward sequence of length {t}, block size is only {self.block_size}"
@@ -326,11 +326,6 @@ class GPT(nn.Module):
         tok_emb = self.transformer.wte(idx) # token embeddings of shape (b, t, n_embd)
         pos_emb = self.transformer.wpe(pos) # position embeddings of shape (1, t, n_embd)
         x = self.transformer.drop(tok_emb + pos_emb)
-
-        if dc_generater is not None:
-            dc_memory = dc_generater(x)
-        else:
-            dc_memory = None
 
         for block in self.transformer.h:
             x = block(x, dc_memory=dc_memory)
@@ -356,8 +351,8 @@ class GPT(nn.Module):
             # if the sequence context is growing too long we must crop it at block_size
             idx_cond = idx if idx.size(1) <= self.block_size else idx[:, -self.block_size:]
             # forward the model to get the logits for the index in the sequence
-            # 修改，传入dc_generater, 注意要规范输入输出的维度！！！
-            logits, _ = self(idx_cond, dc_generater = dc_generater)
+            # 修改，传入dc_memory！！！
+            logits, _ = self(idx_cond, dc_memory = None)
             # pluck the logits at the final step and scale by desired temperature
             logits = logits[:, -1, :] / temperature
             # optionally crop the logits to only the top k options
