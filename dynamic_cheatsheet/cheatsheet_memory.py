@@ -5,7 +5,7 @@ from typing import List, Tuple, Optional, Dict, Any
 
 import torch
 from torch import nn
-
+from typing import List, Optional, Tuple
 from .embed_client import EmbedClient
 from .llm_client import LLMClient
 from .schema import CheatSheetEntry
@@ -135,9 +135,13 @@ class DynamicCheatsheetMemory(nn.Module):
             entry = CheatSheetEntry.from_dict(d)
             key_text = entry.key_text()
             val_text = entry.val_text()
+ 
+            # 以 bank 为准，统一 dtype/device（不要相信外面传进来的 device）
+            bank_device = self.key_bank.device
+            bank_dtype  = self.key_bank.dtype
 
-            k = self.embedder.embed(key_text, device=device)
-            v = self.embedder.embed(val_text, device=device)
+            k = self.embedder.embed(key_text, device=bank_device).to(device=bank_device, dtype=bank_dtype)
+            v = self.embedder.embed(val_text, device=bank_device).to(device=bank_device, dtype=bank_dtype)
 
             if not self._is_novel(k):
                 continue
@@ -145,6 +149,7 @@ class DynamicCheatsheetMemory(nn.Module):
             # FIFO ring write
             self.key_bank[self.ptr] = k
             self.val_bank[self.ptr] = v
+
 
             if self.size < self.capacity:
                 self.size += 1
@@ -163,7 +168,7 @@ class DynamicCheatsheetMemory(nn.Module):
 
     def retrieve(
         self,
-        query_text: str,
+        query_texts: List[str],
         batch_size: int,
         device=None,
     ) -> Tuple[torch.Tensor, Optional[List[List[RetrievedItem]]]]:
@@ -175,52 +180,71 @@ class DynamicCheatsheetMemory(nn.Module):
         if device is None:
             device = self.key_bank.device
 
+        # 合法性检查
+        if len(query_texts) != batch_size:
+            raise ValueError(f"query_text length {len(query_texts)} != batch_size {batch_size}")
+        
         # off/static/dynamic 统一：只要 enabled 且有内容就可检索（static 只是不会 update）
         if (not self.enabled) or (self.mode == "off") or self.size == 0:
-            dc = torch.zeros(batch_size, self.dc_len, self.proj.out_features, device=device)
+            dc = torch.zeros(batch_size, self.dc_len, self.proj.out_features, device=self.key_bank.device, dtype=self.key_bank.dtype)
+
             return dc, None
 
-        q = self.embedder.embed(query_text or "general", device=device)
-        q = q.unsqueeze(0).expand(batch_size, -1)  # (B,D)
+        query_texts = [
+            q if (q is not None and str(q).strip() != "") else "general"
+            for q in query_texts
+        ]
 
-        K = self.key_bank[: self.size]  # (M,D)
+        bank_device = self.key_bank.device
+        bank_dtype  = self.key_bank.dtype
+
+        if hasattr(self.embedder, "embed_batch"):
+            q = self.embedder.embed_batch(query_texts, device=bank_device)  # (B,D)
+        else:
+            q_list = [self.embedder.embed(t, device=bank_device) for t in query_texts]
+            q = torch.stack(q_list, dim=0)  # (B,D)
+
+        # 关键：强制对齐 dtype/device
+        q = q.to(device=bank_device, dtype=bank_dtype)
+
+        K = self.key_bank[: self.size]  # (M,D) 也在 bank_device/bank_dtype
         scores = self._sim(q, K)         # (B,M)
 
         k = min(self.dc_len, self.size)
-        topv, topi = torch.topk(scores, k=k, dim=1)
+        topv, topi = torch.topk(scores, k=k, dim=1) # (B,k)
 
         # gather values: (B,k,D)
-        V = self.val_bank[: self.size]
-        gathered = []
-        retrieved_debug: Optional[List[List[RetrievedItem]]] = [] if self.return_retrieved_entries else None
+        V = self.val_bank[: self.size] # (M,D)
+        idx_exp = topi.unsqueeze(-1).expand(-1, -1, V.size(-1))
+        vals = V.unsqueeze(0).expand(batch_size, -1, -1).gather(1, idx_exp)  # (B,k,D)
 
-        for b in range(batch_size):
-            idx = topi[b]  # (k,)
-            vb = V[idx]    # (k,D)
-            sb = topv[b]   # (k,)
+        # relevance threshold
+        if self.min_relevance > 0:
+            mask = (topv >= self.min_relevance).float().unsqueeze(-1)
+            vals = vals * mask
 
-            # relevance threshold: 低于阈值置 0
-            if self.min_relevance > 0:
-                mask = (sb >= self.min_relevance).float().unsqueeze(1)  # (k,1)
-                vb = vb * mask
+        # ---- 5) debug 信息 ----
+        retrieved_debug: Optional[List[List[RetrievedItem]]] = (
+            [] if self.return_retrieved_entries else None
+        )
+        
+        assert len(self.entries) == self.size or len(self.entries) == self.capacity
 
-            gathered.append(vb)
-
-            if retrieved_debug is not None:
-                items = []
+        if retrieved_debug is not None:
+            for b in range(batch_size):
+                items: List[RetrievedItem] = []
                 for j in range(k):
-                    ei = int(idx[j].item())
-                    score = float(sb[j].item())
-                    entry = self.entries[ei] if ei < len(self.entries) else CheatSheetEntry()
+                    ei = int(topi[b, j].item())
+                    score = float(topv[b, j].item())
+                    entry = self.entries[ei]
                     items.append(RetrievedItem(score=score, entry=entry))
                 retrieved_debug.append(items)
 
-        vals = torch.stack(gathered, dim=0)  # (B,k,D)
-
-        # pad to dc_len
+        # ---- 6) pad 到 dc_len ----
         if k < self.dc_len:
-            pad = torch.zeros(batch_size, self.dc_len - k, self.embed_dim, device=device)
+            pad = torch.zeros(batch_size, self.dc_len - k, self.embed_dim, device=self.key_bank.device, dtype=self.key_bank.dtype)
             vals = torch.cat([vals, pad], dim=1)
 
+        # ---- 7) 投影到 hidden_dim ----
         dc_memory = self.proj(vals)  # (B, dc_len, H)
         return dc_memory, retrieved_debug

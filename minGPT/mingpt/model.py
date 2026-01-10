@@ -88,46 +88,49 @@ class Block(nn.Module):
         m = self.mlp
         self.mlpf = lambda x: m.dropout(m.c_proj(m.act(m.c_fc(x)))) # MLP forward
 
-        # 引入neural memory模块
-        self.nm = nm
-        if nm is not None:
-            self.dc_gate = nn.Sequential(
-                nn.Linear(config.n_embd, 4 * config.n_embd),
-                nn.SiLU(),
-                nn.Linear(4 * config.n_embd, config.n_embd),
-                nn.Sigmoid()
-            )
+        # # 引入neural memory模块
+        # self.nm = nm
+        # if nm is not None:
+        #     self.dc_gate = nn.Sequential(
+        #         nn.Linear(config.n_embd, 4 * config.n_embd),
+        #         nn.SiLU(),
+        #         nn.Linear(4 * config.n_embd, config.n_embd),
+        #         nn.Sigmoid()
+        #     )
         
-            self.gate = nn.Sequential(
-                nn.Linear(config.n_embd, 4 * config.n_embd),
-                nn.SiLU(),
-                nn.Linear(4 * config.n_embd, config.n_embd),
-                nn.Sigmoid()
-            )
+        #     self.gate = nn.Sequential(
+        #         nn.Linear(config.n_embd, 4 * config.n_embd),
+        #         nn.SiLU(),
+        #         nn.Linear(4 * config.n_embd, config.n_embd),
+        #         nn.Sigmoid()
+        #     )
 
 
-    def forward(self, x, dc_memory = None):
+    def forward(self, x): # forward(self, x, dc_memory = None)
         # 查询neural memory
-        if self.nm is not None:
-            B, T, C = x.shape
-            nm_memory = self.nm.retrieve(x.reshape(B*T, C)).reshape(B, T, C)
-            if dc_memory is None:
-                dc_memory = torch.zeros_like(x)
-            g = self.dc_gate(dc_memory)
-            x = x + g * nm_memory
+        # if self.nm is not None:
+        #     B, T, C = x.shape
+        #     nm_memory = self.nm.retrieve(x.reshape(B*T, C)).reshape(B, T, C)
+        #     if dc_memory is None:
+        #         dc_memory = torch.zeros_like(x)
+        #     g = self.dc_gate(dc_memory)
+        #     x = x + g * nm_memory
 
-            x = x + self.attn(self.ln_1(x))
-            x = x + self.mlpf(self.ln_2(x))
+        #     x = x + self.attn(self.ln_1(x))
+        #     x = x + self.mlpf(self.ln_2(x))
 
-            # 更新neural memory
-            self.nm.update(x.reshape(B*T, C))
+        #     # 更新neural memory
+        #     self.nm.update(x.reshape(B*T, C))
         
-            # 再次查询neural memory进行融合
-            nm_memory = self.nm.retrieve(x.reshape(B*T, C), new_params = self.nm.new_params).reshape(B, T, C)
-            x = x + self.gate(x) * nm_memory
-        else:
-            x = x + self.attn(self.ln_1(x))
-            x = x + self.mlpf(self.ln_2(x))
+        #     # 再次查询neural memory进行融合
+        #     nm_memory = self.nm.retrieve(x.reshape(B*T, C), new_params = self.nm.new_params).reshape(B, T, C)
+        #     x = x + self.gate(x) * nm_memory
+        # else:
+        #     x = x + self.attn(self.ln_1(x))
+        #     x = x + self.mlpf(self.ln_2(x))
+
+        x = x + self.attn(self.ln_1(x))
+        x = x + self.mlpf(self.ln_2(x))
 
         return x
 
@@ -149,6 +152,8 @@ class GPT(nn.Module):
         C.embd_pdrop = 0.1
         C.resid_pdrop = 0.1
         C.attn_pdrop = 0.1
+
+        C.nm_use_post_read = True  # 是否在transformer最后使用post-read
         return C
 
     def __init__(self, config, types = None):
@@ -192,14 +197,35 @@ class GPT(nn.Module):
         else:
             self.neural_memory = None
 
+        if self.neural_memory is not None:
+            self.dc_gate = nn.Sequential(
+                nn.Linear(config.n_embd, 4 * config.n_embd),
+                nn.SiLU(),
+                nn.Linear(4 * config.n_embd, config.n_embd),
+                nn.Sigmoid()
+            )
+            self.nm_gate = nn.Sequential(
+                nn.Linear(config.n_embd, 4 * config.n_embd),
+                nn.SiLU(),
+                nn.Linear(4 * config.n_embd, config.n_embd),
+                nn.Sigmoid()
+            )
+        else:
+            self.dc_gate = None
+            self.nm_gate = None
+
+
         self.transformer = nn.ModuleDict(dict(
             wte = nn.Embedding(config.vocab_size, config.n_embd),
             wpe = nn.Embedding(config.block_size, config.n_embd),
             drop = nn.Dropout(config.embd_pdrop),
-            # 将Block中的neural memory模块传入
-            h = nn.ModuleList([Block(config, nm = self.neural_memory) for _ in range(config.n_layer)]),
+            # # 将Block中的neural memory模块传入
+            # h = nn.ModuleList([Block(config, nm = self.neural_memory) for _ in range(config.n_layer)]),
+            h = nn.ModuleList([Block(config) for _ in range(config.n_layer)]),
             ln_f = nn.LayerNorm(config.n_embd),
         ))
+        assert self.transformer.wte.embedding_dim == self.transformer.wpe.embedding_dim, \
+        f"词嵌入维度({self.transformer.wte.embedding_dim})必须等于位置嵌入维度({self.transformer.wpe.embedding_dim})"
         self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
 
         # init all weights, and apply a special scaled init to the residual projections, per GPT-2 paper
@@ -237,7 +263,7 @@ class GPT(nn.Module):
         config.model_type = model_type
         config.vocab_size = 50257 # openai's model vocabulary
         config.block_size = 1024  # openai's model block_size
-        model = GPT(config)
+        model = GPT(config, types = "nm")
         sd = model.state_dict()
 
         # init a huggingface/transformers model
@@ -327,18 +353,58 @@ class GPT(nn.Module):
         pos_emb = self.transformer.wpe(pos) # position embeddings of shape (1, t, n_embd)
         x = self.transformer.drop(tok_emb + pos_emb)
 
-        for block in self.transformer.h:
-            x = block(x, dc_memory=dc_memory)
+        # 防止batch之间的nm fast weights相互污染
+        if self.neural_memory is not None and self.training:
+            self.neural_memory.new_params = None
 
+        # 最后3层注入：read + dc_gate 强度门
+        n_layer = len(self.transformer.h)
+        inject_layers = {n_layer - 3, n_layer - 2, n_layer - 1}
+
+        for i, block in enumerate(self.transformer.h):
+
+            if self.neural_memory is not None and i in inject_layers:
+                B, T, C = x.shape
+
+                # 1) pre-read：NM 决定读出什么
+                m = self.neural_memory.retrieve(x.reshape(B * T, C)).reshape(B, T, C)
+
+                # 2) DC 决定“信多少”（强度门）
+                if dc_memory is None:
+                    dc_vec = torch.zeros(B, 1, C, device=x.device)
+                else:
+                    # 兼容 dc_memory: (B, dc_len, C)
+                    dc_vec = dc_memory.mean(dim=1, keepdim=True)
+
+                g_dc = self.dc_gate(dc_vec).expand(B, T, C)
+
+                # 3) （可选）再乘一个基于x的门（你已有 nm_gate，就先用上）
+                g_nm = self.nm_gate(x)   # (B,T,C)
+                x = x + (g_dc * g_nm) * m
+
+            x = block(x)
+
+        # write: transformer结束后写入NM（会更新 self.neural_memory.new_params）
+        if self.neural_memory is not None:
+            B, T, C = x.shape
+            self.neural_memory.update(x.reshape(B * T, C))
+
+
+        # head: ln_f + lm_head
         x = self.transformer.ln_f(x)
         logits = self.lm_head(x)
 
-        # if we are given some desired targets also calculate the loss
+        # loss & return
         loss = None
         if targets is not None:
-            loss = F.cross_entropy(logits.view(-1, logits.size(-1)), targets.view(-1), ignore_index=-1)
+            loss = F.cross_entropy(
+                logits.view(-1, logits.size(-1)),
+                targets.view(-1),
+                ignore_index=-1
+            )
 
         return logits, loss
+
 
     @torch.no_grad()
     def generate(self, idx, max_new_tokens, temperature=1.0, do_sample=False, top_k=None, dc_generater = None):
@@ -352,7 +418,8 @@ class GPT(nn.Module):
             idx_cond = idx if idx.size(1) <= self.block_size else idx[:, -self.block_size:]
             # forward the model to get the logits for the index in the sequence
             # 修改，传入dc_memory！！！
-            logits, _ = self(idx_cond, dc_memory = None)
+            dc_mem = None if dc_generater is None else dc_generater(idx)  # 你之后自己实现
+            logits, _ = self(idx_cond, dc_memory = dc_mem)
             # pluck the logits at the final step and scale by desired temperature
             logits = logits[:, -1, :] / temperature
             # optionally crop the logits to only the top k options
