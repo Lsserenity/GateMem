@@ -250,7 +250,7 @@ class GPT(nn.Module):
             torch.nn.init.ones_(module.weight)
 
     @classmethod
-    def from_pretrained(cls, model_type):
+    def from_pretrained(cls, model_type, types = None):
         """
         Initialize a pretrained GPT model by copying over the weights
         from a huggingface/transformers checkpoint.
@@ -263,7 +263,7 @@ class GPT(nn.Module):
         config.model_type = model_type
         config.vocab_size = 50257 # openai's model vocabulary
         config.block_size = 1024  # openai's model block_size
-        model = GPT(config, types = "nm")
+        model = GPT(config, types = types)
         sd = model.state_dict()
 
         # init a huggingface/transformers model
@@ -341,7 +341,7 @@ class GPT(nn.Module):
         optimizer = torch.optim.AdamW(optim_groups, lr=train_config.learning_rate, betas=train_config.betas)
         return optimizer
 
-    # 修改，传入dc_generater
+    # 修改，传入dc_memory
     def forward(self, idx, targets=None, dc_memory = None):
         device = idx.device
         b, t = idx.size()
@@ -357,7 +357,7 @@ class GPT(nn.Module):
         if self.neural_memory is not None and self.training:
             self.neural_memory.new_params = None
 
-        # 最后3层注入：read + dc_gate 强度门
+        # 最后3层注入：read + dc_gate
         n_layer = len(self.transformer.h)
         inject_layers = {n_layer - 3, n_layer - 2, n_layer - 1}
 
@@ -407,7 +407,7 @@ class GPT(nn.Module):
 
 
     @torch.no_grad()
-    def generate(self, idx, max_new_tokens, temperature=1.0, do_sample=False, top_k=None, dc_generater = None):
+    def generate(self, idx, max_new_tokens, temperature=1.0, do_sample=False, top_k=None, dc_memory = None):
         """
         Take a conditioning sequence of indices idx (LongTensor of shape (b,t)) and complete
         the sequence max_new_tokens times, feeding the predictions back into the model each time.
@@ -418,7 +418,7 @@ class GPT(nn.Module):
             idx_cond = idx if idx.size(1) <= self.block_size else idx[:, -self.block_size:]
             # forward the model to get the logits for the index in the sequence
             # 修改，传入dc_memory！！！
-            dc_mem = None if dc_generater is None else dc_generater(idx)  # 你之后自己实现
+            dc_mem = None if dc_memory is None else dc_memory
             logits, _ = self(idx_cond, dc_memory = dc_mem)
             # pluck the logits at the final step and scale by desired temperature
             logits = logits[:, -1, :] / temperature

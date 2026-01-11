@@ -27,6 +27,7 @@ def main():
 
     trainer = Trainer(tcfg, model, train_ds)
     trainer.run()
+    print("Training complete.")
 
 if __name__ == "__main__":
     main()
