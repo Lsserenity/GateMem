@@ -381,35 +381,27 @@ class GPT(nn.Module):
             if self.neural_memory is not None and i in inject_layers:
                 B, T, C = x.shape
 
-                # 1) pre-read：NM 决定读出什么
                 m = self.neural_memory.retrieve(x.reshape(B * T, C)).reshape(B, T, C)
 
-                # 2) DC 决定“信多少”（强度门）
                 if dc_memory is None:
                     dc_vec = torch.zeros(B, 1, C, device=x.device)
                 else:
-                    # 兼容 dc_memory: (B, dc_len, C)
                     dc_vec = dc_memory.mean(dim=1, keepdim=True)
 
                 g_dc = self.dc_gate(dc_vec).expand(B, T, C)
 
-                # 3) （可选）再乘一个基于x的门（你已有 nm_gate，就先用上）
                 g_nm = self.nm_gate(x)   # (B,T,C)
                 x = x + (g_dc * g_nm) * m
 
             x = block(x)
 
-        # write: transformer结束后写入NM（会更新 self.neural_memory.new_params）
         if self.neural_memory is not None:
             B, T, C = x.shape
             self.neural_memory.update(x.reshape(B * T, C))
 
-
-        # head: ln_f + lm_head
         x = self.transformer.ln_f(x)
         logits = self.lm_head(x)
 
-        # loss & return
         loss = None
         if targets is not None:
             loss = F.cross_entropy(

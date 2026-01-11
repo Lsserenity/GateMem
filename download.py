@@ -5,4 +5,4 @@ snapshot_download(
     local_dir="gpt2_local",
     local_dir_use_symlinks=False,
 )
-print("✅ GPT-2 downloaded to gpt2_local/")
+print("GPT-2 downloaded to gpt2_local/")

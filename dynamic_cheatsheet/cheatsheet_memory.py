@@ -223,7 +223,6 @@ class DynamicCheatsheetMemory(nn.Module):
             mask = (topv >= self.min_relevance).float().unsqueeze(-1)
             vals = vals * mask
 
-        # ---- 5) debug 信息 ----
         retrieved_debug: Optional[List[List[RetrievedItem]]] = (
             [] if self.return_retrieved_entries else None
         )
@@ -240,11 +239,9 @@ class DynamicCheatsheetMemory(nn.Module):
                     items.append(RetrievedItem(score=score, entry=entry))
                 retrieved_debug.append(items)
 
-        # ---- 6) pad 到 dc_len ----
         if k < self.dc_len:
             pad = torch.zeros(batch_size, self.dc_len - k, self.embed_dim, device=self.key_bank.device, dtype=self.key_bank.dtype)
             vals = torch.cat([vals, pad], dim=1)
 
-        # ---- 7) 投影到 hidden_dim ----
         dc_memory = self.proj(vals)  # (B, dc_len, H)
         return dc_memory, retrieved_debug

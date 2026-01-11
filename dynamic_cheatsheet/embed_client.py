@@ -43,7 +43,6 @@ class EmbedClient:
         # default: stub hashing
         return self._embed_stub(text, device=device)
 
-    # ---------- stub hashing ----------
     def _embed_stub(self, text: str, device=None) -> torch.Tensor:
         v = torch.zeros(self.embed_dim, device=device)
         if not text:
@@ -56,7 +55,6 @@ class EmbedClient:
         v = v / (v.norm() + 1e-6)
         return v
 
-    # ---------- qwen / dashscope embedding ----------
     def _embed_qwen(self, text: str, device=None) -> torch.Tensor:
         api_key = os.getenv(self.api_key_env)
         if not api_key:

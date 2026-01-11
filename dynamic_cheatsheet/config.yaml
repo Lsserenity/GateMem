@@ -10,12 +10,12 @@ dc:
     max_entries_per_update: 2
 
   embedding:
-    provider: qwen        # 或 stub（如果你还在测试）
+    provider: qwen
     model: text-embedding-v3
     embed_dim: 1024
     dc_len: 8
     similarity: cosine
-    min_relevance: 0.0    # 之后再改
+    min_relevance: 0.0
 
   memory:
     capacity: 512

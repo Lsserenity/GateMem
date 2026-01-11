@@ -40,20 +40,17 @@ class ProgramDataset(Dataset):
         idx_full = self.tokenizer(full)[0]      # [T]
         idx_prefix = self.tokenizer(prefix)[0]  # [Tx]
 
-        # 先截断（避免 prefix 本身超过 block_size）
         idx_full = idx_full[: self.block_size]
 
-        # next-token targets
         targets = idx_full.clone()
         targets[:-1] = idx_full[1:]
         targets[-1] = -1
 
-        # 只在 y 上算 loss：y 的第一个 token 在 full 中位置 start_y
         start_y = min(len(idx_prefix), len(idx_full))
         loss_start = max(start_y - 1, 0)
         targets[:loss_start] = -1
 
-        # pad 到固定长度，保证 batch 能 stack
+        # pad 到固定长度
         idx_full = self._pad_to_block(idx_full, pad_value=self.pad_token_id)
         targets  = self._pad_to_block(targets,  pad_value=-1)
 

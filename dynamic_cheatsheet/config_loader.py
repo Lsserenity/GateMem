@@ -2,8 +2,6 @@ import yaml
 from dataclasses import dataclass, field
 
 
-# ---------- DC 子配置 ----------
-
 @dataclass
 class DCLLMConfig:
     provider: str = "stub"
