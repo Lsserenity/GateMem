@@ -255,18 +255,19 @@ class GPT(nn.Module):
         Initialize a pretrained GPT model by copying over the weights
         from a huggingface/transformers checkpoint.
         """
-        assert model_type in {'gpt2', 'gpt2-medium', 'gpt2-large', 'gpt2-xl'}
         import torch
         import os
         from transformers import GPT2LMHeadModel
 
         if model_dir is not None:
-            assert model_type in {'gpt2', 'gpt2-medium', 'gpt2-large', 'gpt2-xl'}
-            hf_source = model_type
-        else:
+            # Load from local directory
             hf_source = model_dir
             if not os.path.isdir(hf_source):
                 raise FileNotFoundError(f"model_dir not found: {hf_source}")
+        else:
+            # Download from Hugging Face Hub
+            assert model_type in {'gpt2', 'gpt2-medium', 'gpt2-large', 'gpt2-xl'}
+            hf_source = model_type
 
 
         # create a from-scratch initialized minGPT model
