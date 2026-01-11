@@ -250,13 +250,24 @@ class GPT(nn.Module):
             torch.nn.init.ones_(module.weight)
 
     @classmethod
-    def from_pretrained(cls, model_type, types = None):
+    def from_pretrained(cls, model_type, types = None, model_dir=None):
         """
         Initialize a pretrained GPT model by copying over the weights
         from a huggingface/transformers checkpoint.
         """
         assert model_type in {'gpt2', 'gpt2-medium', 'gpt2-large', 'gpt2-xl'}
+        import torch
+        import os
         from transformers import GPT2LMHeadModel
+
+        if model_dir is not None:
+            assert model_type in {'gpt2', 'gpt2-medium', 'gpt2-large', 'gpt2-xl'}
+            hf_source = model_type
+        else:
+            hf_source = model_dir
+            if not os.path.isdir(hf_source):
+                raise FileNotFoundError(f"model_dir not found: {hf_source}")
+
 
         # create a from-scratch initialized minGPT model
         config = cls.get_default_config()
@@ -267,7 +278,10 @@ class GPT(nn.Module):
         sd = model.state_dict()
 
         # init a huggingface/transformers model
-        model_hf = GPT2LMHeadModel.from_pretrained(model_type)
+        model_hf = GPT2LMHeadModel.from_pretrained(
+            hf_source,
+            local_files_only=model_dir is not None
+        )
         sd_hf = model_hf.state_dict()
 
         # copy while ensuring all of the parameters are aligned and match in names and shapes
