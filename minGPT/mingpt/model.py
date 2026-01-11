@@ -447,7 +447,7 @@ class GPT(nn.Module):
             
             if eos_token_id is not None:
                 # 如果生成了 eos_token_id，就停止生成
-                idx_finished = torch.where(
+                idx_next = torch.where(
                     finished.unsqueeze(1),
                     torch.full_like(idx_next, eos_token_id),
                     idx_next
