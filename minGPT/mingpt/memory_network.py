@@ -98,49 +98,59 @@ class NeuralMemory(nn.Module):
     #             update_params[name] = param.data
         
     #     self.new_params = update_params
+   
     def update(self, X):
         """
         Fast update (Titans-style):
-        - Do NOT update module slow weights in-place
-        - Only update self.new_params (fast weights) for layers.*
+        - self.new_params 存 fast weights（不保留计算图）
+        - 每次 update 时，把用于求导的 layers.* 临时 requires_grad_(True)
         """
         x = X.detach()
 
-        # target: v = V(x)  (作为写入目标，不要求可微到 V)
+        # target v：不需要梯度
         with torch.no_grad():
             v = self.silu(self.V(x))  # (N, C)
 
-        # query: q = Q(x)
+        # q：你不更新 Q，所以也没必要让梯度穿过 Q（否则浪费图）
         q = normalize(self.silu(self.Q(x)))  # (N, C)
+        # 如果你以后想让 Q 可学习，再把 no_grad 去掉即可
 
-        # 当前使用的参数：如果已有 fast weights 用 fast，否则用 slow
-        params = dict(self.named_parameters()) if self.new_params is None else self.new_params
+        # 当前使用的参数（slow or fast）
+        base_params = dict(self.named_parameters()) if self.new_params is None else self.new_params
 
-        # forward through MLP layers using current params (必须依赖 layers.*)
-        y = functional_call(self, params, q)  # self.forward() 只走 self.layers
+        # layers.* 的全名（在整个 module 的 named_parameters 里是 "layers.0.0.weight" 这种）
+        layer_names = [f"layers.{n}" for n, _ in self.layers.named_parameters()]
+
+        # 关键：构造一份“本次用于求导”的 params，让 layers.* requires_grad=True
+        params_for_grad = dict(base_params)
+        for name in layer_names:
+            params_for_grad[name] = base_params[name].detach().requires_grad_(True)
+
+        # forward 用 params_for_grad（这样 layers.* 在图里是可导的）
+        y = functional_call(self, params_for_grad, q)  # self.forward() 只走 self.layers
         loss = ((y - v) ** 2).mean()
 
-        # 只更新 layers.*（不更新 K/V/Q）
-        layer_names = [f"layers.{n}" for n, _ in self.layers.named_parameters()]
-        learnable = [params[n] for n in layer_names]
+        learnable = [params_for_grad[n] for n in layer_names]
+
+        # # ---- DEBUG: 检查 learnable 的 requires_grad ----
+        # for n in layer_names:
+        #     t = params_for_grad[n]
+        #     if not t.requires_grad:
+        #         print("[BAD requires_grad]", n, type(t), t.requires_grad)
+        #         raise RuntimeError(f"Param {n} does not require grad!")
+
 
         grads = torch.autograd.grad(loss, learnable, allow_unused=False)
 
-        # 初始化 surprise 缓冲
         if self.surprise is None:
             self.surprise = {}
 
-        # 写回到 new_params（fast weights）
-        update_params = dict(params)  # 从当前 params 复制一份开始
-
+        # 写回 new_params（fast weights 依旧存 detach 版本，避免图累积）
+        update_params = dict(base_params)
         for name, g in zip(layer_names, grads):
             if name not in self.surprise:
                 self.surprise[name] = torch.zeros_like(g)
-
-            # 你原来的动量/惊讶项规则（保留）
-            self.surprise[name] = self.eta * self.surprise[name] - self.theta * g
-
-            # fast weight update（保留你的 alpha）
-            update_params[name] = self.alpha * params[name].detach() + self.surprise[name].detach()
+            self.surprise[name] = self.eta * self.surprise[name] - self.theta * g.detach()
+            update_params[name] = self.alpha * base_params[name].detach() + self.surprise[name].detach()
 
         self.new_params = update_params

@@ -57,4 +57,4 @@ class ProgramDataset(Dataset):
         idx_full = self._pad_to_block(idx_full, pad_value=self.pad_token_id)
         targets  = self._pad_to_block(targets,  pad_value=-1)
 
-        return idx_full, targets
+        return idx_full, targets, x, y
